@@ -86,7 +86,7 @@ def compute_popularity():
     return pop_map
 
 
-def get_user_preferences(user_id):
+def build_user_profile(user_id):
     bookings = list(bookings_collection.find({"userId": ObjectId(user_id)}))
 
     print("===================================")
@@ -97,28 +97,40 @@ def get_user_preferences(user_id):
     if len(bookings) == 0:
         return None
 
-    asset_ids = []
-
-    for b in bookings:
-        if "assetId" in b:
-            asset_ids.append(b["assetId"])
+    asset_ids = [b["assetId"] for b in bookings if "assetId" in b]
 
     if len(asset_ids) == 0:
         return None
 
     assets = list(properties_collection.find({"_id": {"$in": asset_ids}}))
-
     if len(assets) == 0:
         return None
 
     df = pd.DataFrame(assets)
+    df = clean_dataframe(df)
 
-    if "category" not in df.columns:
+    if df.empty or "category" not in df.columns:
         return None
 
-    counts = Counter(df["category"])
+    category_counts = Counter(df["category"])
+    location_counts = Counter(df["location"])
+    condition_counts = Counter(df["condition"])
 
-    return [c for c, _ in counts.most_common(3)]
+    avg_budget = int(df["price_per_day"].mean()) if "price_per_day" in df.columns else 0
+
+    return {
+        "preferred_categories": [c for c, _ in category_counts.most_common(3)],
+        "preferred_locations": [l for l, _ in location_counts.most_common(3)],
+        "preferred_conditions": [cond for cond, _ in condition_counts.most_common(3)],
+        "avg_budget": avg_budget,
+        "booked_asset_ids": [str(a) for a in asset_ids]
+    }
+
+
+def exclude_booked_assets(df, booked_ids):
+    if not booked_ids:
+        return df
+    return df[~df["_id"].astype(str).isin(booked_ids)]
 
 
 # ==============================
@@ -207,20 +219,28 @@ def recommend(user_id):
     # USER PERSONALIZATION
     # ==========================
 
-    preferred = get_user_preferences(user_id)
+    all_properties_df = df.copy()
 
-    if preferred:
-        print("Preferred categories:", preferred)
+    user_profile = build_user_profile(user_id)
 
-        filtered_df = df[df["category"].isin(preferred)]
+    if user_profile:
+        print("User recommendation profile:", user_profile)
 
-        if len(filtered_df) >= 5:
-            df = filtered_df
-        else:
-            print("Fallback: not enough personalized data")
+        if user_profile["preferred_categories"]:
+            filtered_df = df[df["category"].isin(user_profile["preferred_categories"])]
+            if len(filtered_df) >= 5:
+                df = filtered_df
+            else:
+                print("Fallback: not enough personalized category matches")
 
+        df = exclude_booked_assets(df, user_profile["booked_asset_ids"])
+
+        if df.empty:
+            print("Personalized filters removed all assets, restoring full property set.")
+            df = all_properties_df.copy()
+            df = exclude_booked_assets(df, user_profile["booked_asset_ids"])
     else:
-        print("No user history → using default recommendation")
+        print("No booking history → using default recommendation")
 
     # ==========================
     # FEATURES
@@ -251,7 +271,7 @@ def recommend(user_id):
     # ==========================
 
     results = recommend_for_user(
-        user,
+        user_profile or user,
         df,
         encoder,
         scaler,
