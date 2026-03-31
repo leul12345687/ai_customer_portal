@@ -3,10 +3,10 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
 def recommend_for_user(user_context, df, encoder, scaler, property_vectors, categorical_cols, numerical_cols, top_n=5):
-    # Build a preference profile from user booking history or fallback user attributes
     preferred_categories = user_context.get('preferred_categories') if isinstance(user_context, dict) else None
     preferred_locations = user_context.get('preferred_locations') if isinstance(user_context, dict) else None
     preferred_conditions = user_context.get('preferred_conditions') if isinstance(user_context, dict) else None
+    booked_asset_ids = user_context.get('booked_asset_ids') if isinstance(user_context, dict) else []
 
     u_category = None
     u_location = None
@@ -67,13 +67,33 @@ def recommend_for_user(user_context, df, encoder, scaler, property_vectors, cate
     if preferred_conditions:
         temp_df['similarity'] += temp_df['condition'].isin(preferred_conditions).astype(float) * 0.05
 
+    # Boost based on exact booked asset id and booking-based similarity
+    if booked_asset_ids:
+        booked_mask = temp_df['_id'].astype(str).isin(booked_asset_ids)
+        if booked_mask.any():
+            booked_vectors = property_vectors[booked_mask.values]
+            booking_similarity = cosine_similarity(property_vectors, booked_vectors).max(axis=1)
+        else:
+            booking_similarity = np.zeros(len(temp_df))
+
+        temp_df['booking_similarity'] = booking_similarity
+        temp_df['same_property_bonus'] = booked_mask.astype(float) * 0.4
+    else:
+        temp_df['booking_similarity'] = 0
+        temp_df['same_property_bonus'] = 0
+
     if 'popularity' in temp_df.columns:
         max_popularity = temp_df['popularity'].max() or 1
         temp_df['popularity_score'] = temp_df['popularity'] / max_popularity
     else:
         temp_df['popularity_score'] = 0
 
-    temp_df['final_score'] = temp_df['similarity'] * 0.78 + temp_df['popularity_score'] * 0.22
+    temp_df['final_score'] = (
+        temp_df['similarity'] * 0.55
+        + temp_df['booking_similarity'] * 0.30
+        + temp_df['popularity_score'] * 0.15
+        + temp_df['same_property_bonus']
+    )
 
     if 'price_per_day' in temp_df.columns and u_budget is not None:
         temp_df = temp_df[temp_df['price_per_day'] <= u_budget]
