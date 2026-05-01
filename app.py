@@ -11,7 +11,11 @@ from collections import Counter
 from dotenv import load_dotenv
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from recommendation_model import recommend_for_user
+from recommendation_model import (
+    recommend_for_user,
+    build_common_asset_model,
+    recommend_by_common_asset_history,
+)
 from smart_search_model import smart_search_and_rank
 
 app = Flask(__name__)
@@ -44,6 +48,41 @@ db = client[DB_NAME]
 properties_collection = db["assets"]
 users_collection = db["users"]
 bookings_collection = db["bookings"]
+
+# ==============================
+# BOOKING-HISTORY MODEL CACHE
+# ==============================
+
+COMMON_ASSET_MODEL_TTL_SECONDS = int(os.getenv("COMMON_ASSET_MODEL_TTL_SECONDS", "900"))
+COMMON_ASSET_MODEL_MAX_BOOKINGS = int(os.getenv("COMMON_ASSET_MODEL_MAX_BOOKINGS", "50000"))
+
+_common_asset_model_cache = {
+    "built_at": 0.0,
+    "model": None,
+}
+
+
+def get_common_asset_model_cached():
+    now = time.time()
+    model = _common_asset_model_cache.get("model")
+    built_at = float(_common_asset_model_cache.get("built_at") or 0.0)
+
+    if model is not None and (now - built_at) < COMMON_ASSET_MODEL_TTL_SECONDS:
+        return model
+
+    query = {
+        "status": {"$ne": "CANCELLED"},
+        "paymentStatus": "PAID",
+        "asset": {"$exists": True, "$ne": None},
+    }
+    projection = {"customer": 1, "userId": 1, "asset": 1, "status": 1, "paymentStatus": 1}
+    cursor = bookings_collection.find(query, projection=projection).limit(COMMON_ASSET_MODEL_MAX_BOOKINGS)
+    booking_rows = list(cursor)
+
+    model = build_common_asset_model(booking_rows)
+    _common_asset_model_cache["model"] = model
+    _common_asset_model_cache["built_at"] = now
+    return model
 
 # ==============================
 # HELPERS
@@ -100,7 +139,10 @@ def compute_popularity():
 
 def build_user_profile(user_id):
     bookings = list(bookings_collection.find({
-        "userId": ObjectId(user_id),
+        "$or": [
+            {"userId": ObjectId(user_id)},
+            {"customer": ObjectId(user_id)},
+        ],
         "status": {"$ne": "CANCELLED"},
         "paymentStatus": "PAID"
     }))
@@ -251,7 +293,12 @@ def home():
 
 @app.route("/debug-user-bookings/<user_id>")
 def debug_user_bookings(user_id):
-    bookings = list(bookings_collection.find({"userId": ObjectId(user_id)}))
+    bookings = list(bookings_collection.find({
+        "$or": [
+            {"userId": ObjectId(user_id)},
+            {"customer": ObjectId(user_id)},
+        ]
+    }))
     return jsonify(serialize_doc(bookings))
 
 
@@ -319,24 +366,21 @@ def recommend(user_id):
     df["popularity"] = df["_id"].astype(str).map(pop_map).fillna(0)
 
     # ==========================
-    # USER PERSONALIZATION
+    # BOOKING-HISTORY (COMMON ASSET) RECOMMENDATIONS
     # ==========================
 
-    all_properties_df = df.copy()
+    common_asset_model = get_common_asset_model_cached()
+    results = recommend_by_common_asset_history(
+        user_id,
+        df,
+        common_asset_model,
+        top_n=5,
+        popularity_col="popularity",
+    )
 
+    # If the common-asset model falls back to popularity only (e.g. user has no history),
+    # we keep the existing feature-based recommender as a secondary fallback.
     user_profile = build_user_profile(user_id)
-
-    if user_profile:
-        print("User recommendation profile:", user_profile)
-
-        if user_profile["preferred_categories"]:
-            filtered_df = df[df["category"].isin(user_profile["preferred_categories"])]
-            if len(filtered_df) >= 8:
-                df = filtered_df
-            else:
-                print("Fallback: not enough personalized category matches")
-    else:
-        print("No booking history → using default recommendation")
     
     # ==========================
     # FEATURES
@@ -366,16 +410,17 @@ def recommend(user_id):
     # MODEL
     # ==========================
 
-    results = recommend_for_user(
-        user_profile or user,
-        df,
-        encoder,
-        scaler,
-        property_vectors,
-        categorical_cols,
-        numerical_cols,
-        top_n=5
-    )
+    if user_profile is not None and (results is None or len(results) < 3):
+        results = recommend_for_user(
+            user_profile or user,
+            df,
+            encoder,
+            scaler,
+            property_vectors,
+            categorical_cols,
+            numerical_cols,
+            top_n=5
+        )
 
     return jsonify(serialize_doc(results.to_dict(orient="records")))
 
