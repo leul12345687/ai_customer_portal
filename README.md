@@ -156,9 +156,27 @@ So this is best described as:
 - `GET /debug-user-bookings/<user_id>` -> inspect user bookings
 - `GET /users-with-bookings` -> booking counts by user
 - `GET /debug-assets` -> sample assets
+- `GET /evaluate-model` -> offline evaluation metrics (leave-one-out)
 
 Note:
 - `smart_search_and_rank` exists in `smart_search_model.py` but currently is not exposed through an API route in `app.py`.
+
+### `/evaluate-model` query params
+This endpoint evaluates the recommender offline using booking history:
+- Protocol: for each evaluated user, hold out their most recent PAID booking and check whether the held-out asset appears in the top-K recommendations.
+
+Query parameters:
+- `k` (default `5`): Top-K used for metrics
+- `max_users` (default `200`): Max users to evaluate (most active users first)
+- `max_bookings` (default `50000`): Max booking rows to load for evaluation
+
+Response metrics:
+- `accuracy_at_k` / `hit_rate_at_k`: fraction of users where held-out asset is in top-K
+- `precision_at_k`: $hits / (users\_scored * k)$
+- `recall_at_k`: same as hit rate (one held-out relevant item per user)
+- `mrr_at_k`: mean reciprocal rank
+- `ndcg_at_k`: normalized discounted cumulative gain
+- `catalog_coverage`: unique recommended assets / total assets
 
 ## 9) Model Lifecycle and Retraining
 On startup:
