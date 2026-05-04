@@ -151,12 +151,24 @@ So this is best described as:
 - Feature artifact fitting + heuristic ranking pipeline (not a predictive supervised learner).
 
 ## 8) API Endpoints
+Base URL (production):
+- https://ai-customer-portal.onrender.com
+
+Endpoints:
 - `GET /health` -> service health check
 - `GET /recommend/<user_id>` -> top recommendations
 - `GET /debug-user-bookings/<user_id>` -> inspect user bookings
 - `GET /users-with-bookings` -> booking counts by user
 - `GET /debug-assets` -> sample assets
 - `GET /evaluate-model` -> offline evaluation metrics (leave-one-out)
+
+Full URL examples:
+- https://ai-customer-portal.onrender.com/health
+- https://ai-customer-portal.onrender.com/recommend/<user_id>
+- https://ai-customer-portal.onrender.com/debug-user-bookings/<user_id>
+- https://ai-customer-portal.onrender.com/users-with-bookings
+- https://ai-customer-portal.onrender.com/debug-assets
+- https://ai-customer-portal.onrender.com/evaluate-model
 
 Note:
 - `smart_search_and_rank` exists in `smart_search_model.py` but currently is not exposed through an API route in `app.py`.
